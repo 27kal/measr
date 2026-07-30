@@ -71,6 +71,9 @@ export interface StatementImport {
   validation: StatementImportValidation | null;
   error: string | null;
   ingestionRunId: string | null;
+  /** Set while a large statement is extracted in segments. */
+  chunkTotal: number | null;
+  chunkDone: number;
   createdAt: string;
   completedAt: string | null;
 }

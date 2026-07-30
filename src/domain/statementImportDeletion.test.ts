@@ -7,7 +7,7 @@ function statementImport(overrides: Partial<StatementImport> = {}): StatementImp
     id: 'import-1', companyId: 'company-1', bankAccountId: 'bank-current', filename: 'july.csv',
     mimeType: 'text/csv', byteSize: 512, status: 'complete', institution: 'Demo bank', accountName: '',
     accountIdentifier: '', periodStart: null, periodEnd: null, transactionCount: 2, importedCount: 2,
-    duplicateCount: 0, validation: null, error: null, ingestionRunId: 'run-1',
+    duplicateCount: 0, validation: null, error: null, ingestionRunId: 'run-1', chunkTotal: null, chunkDone: 0,
     createdAt: '2026-07-30T10:00:00.000Z', completedAt: '2026-07-30T10:00:05.000Z', ...overrides
   };
 }

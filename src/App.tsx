@@ -404,6 +404,8 @@ function StatementUploader({ company, account, statementImports, workflow, onCha
     finally { setConfirmingId(null); }
   };
   const statusCopy = (statementImport: StatementImport) => {
+    const chunking = statementImport.chunkTotal && ['queued', 'processing', 'retryable'].includes(statementImport.status);
+    if (chunking) return `Reading section ${Math.min(statementImport.chunkDone + 1, statementImport.chunkTotal!)} of ${statementImport.chunkTotal}`;
     if (statementImport.status === 'queued') return 'Waiting to be read';
     if (statementImport.status === 'processing') return 'Reading and verifying every transaction';
     if (statementImport.status === 'retryable') return 'Verification interrupted · retrying automatically';

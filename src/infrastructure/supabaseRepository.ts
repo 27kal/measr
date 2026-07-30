@@ -28,7 +28,9 @@ function mapStatementImport(row: Record<string, any>): StatementImport {
     periodEnd: row.period_end ?? row.periodEnd ?? null, transactionCount: Number(row.transaction_count ?? row.transactionCount ?? 0),
     importedCount: Number(row.imported_count ?? row.importedCount ?? 0), duplicateCount: Number(row.duplicate_count ?? row.duplicateCount ?? 0),
     validation: row.validation ?? null, error: row.last_error ?? row.error ?? null,
-    ingestionRunId: row.ingestion_run_id ?? row.ingestionRunId ?? null, createdAt: row.created_at ?? row.createdAt,
+    ingestionRunId: row.ingestion_run_id ?? row.ingestionRunId ?? null,
+    chunkTotal: row.chunk_total ?? row.chunkTotal ?? null, chunkDone: Number(row.chunk_done ?? row.chunkDone ?? 0),
+    createdAt: row.created_at ?? row.createdAt,
     completedAt: row.completed_at ?? row.completedAt ?? null
   };
 }

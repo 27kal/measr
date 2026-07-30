@@ -111,7 +111,7 @@ export class DemoRepository implements WorkbenchRepository {
       status: 'complete', institution: 'Demo bank', accountName: '', accountIdentifier: '', periodStart: null, periodEnd: null,
       transactionCount: result.imported, importedCount: result.imported, duplicateCount: 0,
       validation: { valid: true, proofLevel: 'structural', errors: [], warnings: [], checks: [], transactionCount: result.imported, netMovementMinor: 0 },
-      error: null, ingestionRunId, createdAt: new Date().toISOString(), completedAt: new Date().toISOString()
+      error: null, ingestionRunId, chunkTotal: null, chunkDone: 0, createdAt: new Date().toISOString(), completedAt: new Date().toISOString()
     };
     this.snapshot.statementImports.unshift(statementImport);
     this.save();
