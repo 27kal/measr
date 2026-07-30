@@ -75,7 +75,16 @@ export class DemoRepository implements WorkbenchRepository {
   }
 
   async updateCompany(company: Company): Promise<void> {
-    this.snapshot.companies = this.snapshot.companies.map(current => current.id === company.id ? structuredClone(company) : current);
+    const next = structuredClone(company);
+    // Bank accounts mirror Xero one-to-one. The demo emulates the server sync
+    // by materialising a Xero-named account when the connection is made.
+    if (next.setup.xeroConnected && next.bankAccounts.length === 0) {
+      next.bankAccounts = [{ id: `bank-${crypto.randomUUID()}`, companyId: next.id, name: 'Business Bank Account', currency: 'GBP', source: 'csv', xeroAccountId: `demo-xero-${next.id}` }];
+      next.lastOpenedBankAccountId = next.bankAccounts[0].id;
+    }
+    if (!next.setup.xeroConnected) next.bankAccounts = next.bankAccounts.filter(account => this.snapshot.workflow.lines.some(line => line.bankAccountId === account.id));
+    next.setup.bankSourceConnected = next.bankAccounts.length > 0;
+    this.snapshot.companies = this.snapshot.companies.map(current => current.id === next.id ? next : current);
     this.save();
   }
 

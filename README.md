@@ -60,6 +60,7 @@ Never put Xero or Companies House credentials in a `VITE_` variable.
 - immutable private source files and a durable, company-fair extraction queue with leases, retries and atomic all-or-nothing commit;
 - durable ingestion batches that transactionally enqueue every newly imported line for background analysis;
 - one feed per bank account and every canonical line retained until reconciled;
+- bank accounts mirrored one-to-one from the connected Xero organisation's active GBP bank accounts, adopting Xero's names, with no manual account creation or mapping;
 - BankTransaction, authorised bill/invoice and shared-transfer candidate models;
 - local-GUID-first Xero correlation records;
 - vault-backed Xero OAuth with rotating refresh tokens;

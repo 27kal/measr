@@ -60,6 +60,9 @@ verify_jwt = true
 [functions.statement-import-delete]
 verify_jwt = true
 
+[functions.bank-accounts-sync]
+verify_jwt = false
+
 [functions.statement-import-worker]
 verify_jwt = false
 

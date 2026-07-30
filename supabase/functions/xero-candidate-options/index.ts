@@ -23,8 +23,12 @@ Deno.serve(async request => {
       xeroRequest(accessToken, connection.tenant_id, 'Contacts?summaryOnly=true')
     ]);
     const activeAccounts = (accountPayload.Accounts ?? []).filter((account: Record<string, unknown>) => account.Status === 'ACTIVE');
+    const bankAccounts = activeAccounts.filter((account: Record<string, unknown>) => account.Type === 'BANK' && account.CurrencyCode === 'GBP').map((account: Record<string, unknown>) => ({ id: account.AccountID, name: account.Name, code: account.Code ?? '' }));
+    // Workbench bank accounts mirror Xero one-to-one; this read is the sync point.
+    const { error: syncError } = await service.rpc('sync_xero_bank_accounts', { p_company_id: companyId, p_accounts: bankAccounts });
+    if (syncError) throw new Error(`Could not sync Xero bank accounts: ${syncError.message}`);
     return json({
-      bankAccounts: activeAccounts.filter((account: Record<string, unknown>) => account.Type === 'BANK' && account.CurrencyCode === 'GBP').map((account: Record<string, unknown>) => ({ id: account.AccountID, name: account.Name, code: account.Code ?? '' })),
+      bankAccounts,
       contacts: (contactPayload.Contacts ?? []).filter((contact: Record<string, unknown>) => contact.ContactStatus === 'ACTIVE').map((contact: Record<string, unknown>) => ({ id: contact.ContactID, name: contact.Name })).sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name)),
       accounts: activeAccounts.filter((account: Record<string, unknown>) => account.Type !== 'BANK' && ['EXPENSE', 'REVENUE'].includes(String(account.Class))).map((account: Record<string, unknown>) => ({ code: account.Code, name: account.Name, class: account.Class, taxType: account.TaxType ?? '' })).filter((account: { code?: string }) => account.code).sort((a: { code: string }, b: { code: string }) => a.code.localeCompare(b.code))
     });

@@ -129,10 +129,9 @@ export class SupabaseRepository implements WorkbenchRepository {
 
   async updateCompany(company: Company): Promise<void> {
     const db = client();
+    // Bank accounts mirror Xero and are written only by the server-side sync.
     const { error } = await db.from('companies').update({ base_currency: company.setup.baseCurrency, vat_registered: company.setup.vatRegistered, vat_scheme: company.setup.vatScheme }).eq('id', company.id);
     if (error) throw error;
-    const { error: accountError } = await db.from('bank_accounts').upsert(company.bankAccounts.map(account => ({ id: account.id, company_id: company.id, name: account.name, currency: account.currency, source: account.source, xero_account_id: account.xeroAccountId })), { onConflict: 'id' });
-    if (accountError) throw accountError;
   }
 
   async importLines(companyId: string, bankAccountId: string, csv: string): Promise<{ imported: number; errors: string[] }> {
