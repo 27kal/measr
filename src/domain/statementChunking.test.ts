@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chunkBody, chunkHeaderContext, planStatementChunks, stitchStatementChunks, CHUNK_DATA_ROWS, SINGLE_PASS_MAX_ROWS } from '../../supabase/functions/_shared/statement-chunking';
+import { chunkBody, chunkHeaderContext, chunksForFailedRows, planStatementChunks, stitchStatementChunks, CHUNK_DATA_ROWS, SINGLE_PASS_MAX_ROWS } from '../../supabase/functions/_shared/statement-chunking';
 import { validateStatementExtraction, type StatementExtraction } from '../../supabase/functions/_shared/statement-import-validation';
 
 function csvOf(rows: number): string {
@@ -43,6 +43,22 @@ describe('statement chunk planning', () => {
     const body = chunkBody(plan, second);
     expect(body.startsWith(`L${second.lineStart}: `)).toBe(true);
     expect(chunkHeaderContext(plan)).toContain('L1: Date,Description,Amount');
+  });
+});
+
+describe('failed row to segment mapping', () => {
+  it('maps failing CSV rows to the segments that produced them', () => {
+    const plan = planStatementChunks(csvOf(481))!;
+    const failures = chunksForFailedRows(plan.chunks, [
+      'CSV row 2 has no transaction description.',
+      'CSV row 79 has no transaction description.',
+      'CSV row 241 has no transaction description.',
+      'The statement period is missing or invalid.'
+    ]);
+    expect([...failures.keys()]).toEqual([0, 3]);
+    expect(failures.get(0)!.length).toBe(2);
+    // Statement-level errors name no row and map to no segment.
+    expect([...failures.values()].flat()).not.toContain('The statement period is missing or invalid.');
   });
 });
 

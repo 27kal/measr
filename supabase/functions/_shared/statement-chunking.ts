@@ -80,6 +80,24 @@ function validIsoDate(value: string): boolean {
 }
 
 /**
+ * Maps deterministic validation errors back to the segments that produced
+ * them, using the absolute "CSV row N" locators. Errors that name no line
+ * (statement-level failures) map to no segment.
+ */
+export function chunksForFailedRows(chunks: StatementChunk[], errors: string[]): Map<number, string[]> {
+  const failures = new Map<number, string[]>();
+  for (const error of errors) {
+    const match = /CSV row (\d+)/i.exec(error);
+    if (!match) continue;
+    const line = Number(match[1]);
+    const chunk = chunks.find(candidate => line >= candidate.lineStart && line <= candidate.lineEnd);
+    if (!chunk) continue;
+    failures.set(chunk.index, [...(failures.get(chunk.index) ?? []), error]);
+  }
+  return failures;
+}
+
+/**
  * Combines per-segment extractions (in chunk order) into one statement
  * extraction. Transactions keep segment display order; the statement period
  * covers every extracted transaction; whole-statement control totals are

@@ -2,7 +2,7 @@ import { json } from '../_shared/http.ts';
 import { serviceClient } from '../_shared/company-access.ts';
 import { DOCUMENT_BUCKET } from '../_shared/documents.ts';
 import { completeTabularText, extractStatement, extractStatementChunk, PermanentExtractionError } from '../_shared/statement-extraction.ts';
-import { planStatementChunks, stitchStatementChunks } from '../_shared/statement-chunking.ts';
+import { chunksForFailedRows, planStatementChunks, stitchStatementChunks } from '../_shared/statement-chunking.ts';
 import { addStatementDedupeKeys, sameTransactionSet, statementIdentityMatches, validateStatementExtraction, type StatementExtraction, type StatementValidation } from '../_shared/statement-import-validation.ts';
 
 type Claim = { importId: string; companyId: string; bankAccountId: string; attempt: number; leaseToken: string };
@@ -68,24 +68,28 @@ async function completeVerified(service: any, claim: Claim, profile: Row | null,
 // per worker run; completing a segment reports progress (which refreshes the
 // attempt budget) and immediately schedules the next run. The final run
 // stitches every persisted segment and validates the whole.
+const MAX_CHUNK_REPAIR_ROUNDS = 2;
+
 async function processChunked(service: any, claim: Claim, row: Row, profile: Row | null, text: string) {
   const plan = planStatementChunks(text)!;
   const total = plan.chunks.length;
-  const { data: doneRows, error: doneError } = await service.from('statement_import_chunks').select('chunk_index').eq('import_id', claim.importId);
-  if (doneError) throw new Error(doneError.message);
-  const done = new Set((doneRows ?? []).map((chunkRow: Row) => Number(chunkRow.chunk_index)));
-  const next = plan.chunks.find(chunk => !done.has(chunk.index));
+  const { data: chunkStates, error: statesError } = await service.from('statement_import_chunks').select('chunk_index, redo_errors').eq('import_id', claim.importId);
+  if (statesError) throw new Error(statesError.message);
+  const states = new Map<number, Row>((chunkStates ?? []).map((chunkRow: Row) => [Number(chunkRow.chunk_index), chunkRow]));
+  const settled = (index: number) => states.has(index) && !states.get(index)!.redo_errors;
+  const next = plan.chunks.find(chunk => !settled(chunk.index));
   if (next) {
-    const segment = await extractStatementChunk(plan, next, String(row.filename));
-    const { error: insertError } = await service.from('statement_import_chunks').upsert({
-      import_id: claim.importId, chunk_index: next.index, line_start: next.lineStart, line_end: next.lineEnd, extraction: segment
-    }, { onConflict: 'import_id,chunk_index', ignoreDuplicates: true });
-    if (insertError) throw new Error(insertError.message);
-    done.add(next.index);
-    if (done.size < total) {
-      await finish(service, claim, 'progress', undefined, undefined, undefined, { chunkDone: done.size, chunkTotal: total });
+    const redoErrors = states.get(next.index)?.redo_errors as string[] | null | undefined;
+    const segment = await extractStatementChunk(plan, next, String(row.filename), redoErrors?.length ? redoErrors.join('\n') : undefined);
+    const { error: upsertError } = await service.from('statement_import_chunks').upsert({
+      import_id: claim.importId, chunk_index: next.index, line_start: next.lineStart, line_end: next.lineEnd, extraction: segment, redo_errors: null
+    }, { onConflict: 'import_id,chunk_index' });
+    if (upsertError) throw new Error(upsertError.message);
+    const settledCount = plan.chunks.filter(chunk => chunk.index === next.index || settled(chunk.index)).length;
+    if (settledCount < total) {
+      await finish(service, claim, 'progress', undefined, undefined, undefined, { chunkDone: settledCount, chunkTotal: total });
       scheduleWorker('statement-import-worker');
-      return { importId: claim.importId, outcome: 'progress', chunkDone: done.size, chunkTotal: total };
+      return { importId: claim.importId, outcome: 'progress', chunkDone: settledCount, chunkTotal: total };
     }
   }
   const { data: chunkRows, error: chunksError } = await service.from('statement_import_chunks').select('chunk_index, extraction').eq('import_id', claim.importId).order('chunk_index');
@@ -93,6 +97,20 @@ async function processChunked(service: any, claim: Claim, row: Row, profile: Row
   const stitched = stitchStatementChunks((chunkRows ?? []).map((chunkRow: Row) => chunkRow.extraction as StatementExtraction));
   const validation = validateStatementExtraction(stitched);
   if (!validation.valid) {
+    // Repair only the segments that produced failing rows, with the failures
+    // as context. Rounds are bounded so an unextractable segment still fails.
+    const failures = chunksForFailedRows(plan.chunks, validation.errors);
+    if (failures.size > 0 && Number(row.repair_rounds ?? 0) < MAX_CHUNK_REPAIR_ROUNDS) {
+      for (const [index, errors] of failures) {
+        const { error: markError } = await service.from('statement_import_chunks').update({ redo_errors: errors }).eq('import_id', claim.importId).eq('chunk_index', index);
+        if (markError) throw new Error(markError.message);
+      }
+      const { error: roundError } = await service.from('statement_imports').update({ repair_rounds: Number(row.repair_rounds ?? 0) + 1 }).eq('id', claim.importId);
+      if (roundError) throw new Error(roundError.message);
+      await finish(service, claim, 'progress', undefined, undefined, undefined, { chunkDone: total - failures.size, chunkTotal: total });
+      scheduleWorker('statement-import-worker');
+      return { importId: claim.importId, outcome: 'repairing', repairedChunks: [...failures.keys()] };
+    }
     await finish(service, claim, 'failed', stitched, validation, validation.errors.join(' '), { chunkDone: total, chunkTotal: total });
     return { importId: claim.importId, outcome: 'failed', errors: validation.errors };
   }

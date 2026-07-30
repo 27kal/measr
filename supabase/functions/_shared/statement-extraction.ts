@@ -122,12 +122,13 @@ export async function extractStatement(bytes: Uint8Array, mimeType: string, file
  * whole file, and statement-level fields not visible in the segment stay
  * empty/null for the stitcher to resolve.
  */
-export async function extractStatementChunk(plan: StatementChunkPlan, chunk: StatementChunk, filename: string): Promise<StatementExtraction> {
+export async function extractStatementChunk(plan: StatementChunkPlan, chunk: StatementChunk, filename: string, retryContext?: string): Promise<StatementExtraction> {
   const prompt = [
     `Read one segment of ${filename}, a UK bank statement in tabular text form. This is segment ${chunk.index + 1} of ${plan.chunks.length}; other segments are extracted separately.`,
     `Every line is prefixed with its absolute file line number as "L<n>: ". Extract ONLY posted transactions whose lines fall inside this segment (lines ${chunk.lineStart}-${chunk.lineEnd}). The file's opening lines are provided for column-header context only; never extract transactions from them when they are outside the segment range.`,
     `For sourceLocator use "CSV row <n>" with the absolute line number from the "L<n>:" prefix.`,
-    `For statement-level fields (institution, account identity, period, balances, money in/out totals) fill only what this segment itself shows; otherwise use empty strings or null. Do not derive totals for the whole statement from a partial view.`,
+    `Every transaction must carry a non-empty description taken from the row's own text. When the source has one narrative or merchant column, that text is the description; also set payee when it names the counterparty. Only statement-level fields (institution, account identity, period, balances, money in/out totals) may be left empty or null when this segment does not show them; never derive whole-statement totals from a partial view.`,
+    ...(retryContext ? ['', 'A deterministic validator rejected an earlier extraction of this segment. Correct these specific problems without changing source facts:', retryContext] : []),
     '',
     'File opening lines (context only):',
     '<file-start>',
