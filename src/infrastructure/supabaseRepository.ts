@@ -1,4 +1,4 @@
-import type { AcceptAgentCreateResult, AcceptAgentMatchRequest, AnalyseDocumentRequest, ContinueAgentRequest, PrepareRequest, UploadDocumentRequest, WorkbenchRepository, WorkbenchSnapshot, XeroPreflightResponse } from '../application/repository';
+import type { AcceptAgentCreateResult, AcceptAgentMatchRequest, AnalyseDocumentRequest, ContinueAgentRequest, PrepareRequest, StatementImportDeletionResult, UploadDocumentRequest, WorkbenchRepository, WorkbenchSnapshot, XeroPreflightResponse } from '../application/repository';
 import { importStatementCsv } from '../domain/csv';
 import type { AgentAnalysisBatchProgress, AgentThread, BankAccount, CandidateSet, Company, CompanyChat, CompanyChatThread, CompaniesHouseResult, LineDocument, StatementImport, StatementLine, XeroAttachmentInfo, XeroCandidateOptions, XeroObservation, XeroObservationProgress } from '../domain/types';
 import { invokeBackend, invokeBackendForm, supabase } from './supabase';
@@ -27,7 +27,8 @@ function mapStatementImport(row: Record<string, any>): StatementImport {
     accountIdentifier: row.detected_account_identifier ?? row.accountIdentifier ?? '', periodStart: row.period_start ?? row.periodStart ?? null,
     periodEnd: row.period_end ?? row.periodEnd ?? null, transactionCount: Number(row.transaction_count ?? row.transactionCount ?? 0),
     importedCount: Number(row.imported_count ?? row.importedCount ?? 0), duplicateCount: Number(row.duplicate_count ?? row.duplicateCount ?? 0),
-    validation: row.validation ?? null, error: row.last_error ?? row.error ?? null, createdAt: row.created_at ?? row.createdAt,
+    validation: row.validation ?? null, error: row.last_error ?? row.error ?? null,
+    ingestionRunId: row.ingestion_run_id ?? row.ingestionRunId ?? null, createdAt: row.created_at ?? row.createdAt,
     completedAt: row.completed_at ?? row.completedAt ?? null
   };
 }
@@ -66,7 +67,7 @@ export class SupabaseRepository implements WorkbenchRepository {
       bankAccounts: accounts.filter(account => account.company_id === row.id).map(account => ({ id: String(account.id), companyId: String(account.company_id), name: String(account.name), currency: 'GBP', source: account.source as BankAccount['source'], xeroAccountId: account.xero_account_id ? String(account.xero_account_id) : null }))
     }));
     const lines: StatementLine[] = (linesResult.data ?? []).map(row => ({
-      id: row.id, companyId: row.company_id, bankAccountId: row.bank_account_id, postedAt: row.posted_at, amountMinor: Number(row.amount_minor), currency: 'GBP', payee: row.payee,
+      id: row.id, companyId: row.company_id, bankAccountId: row.bank_account_id, ingestionRunId: row.ingestion_run_id ?? null, postedAt: row.posted_at, amountMinor: Number(row.amount_minor), currency: 'GBP', payee: row.payee,
       description: row.description, reference: row.reference, status: row.status, statusVersion: row.status_version, activeCandidateSetId: row.active_candidate_set_id, note: row.note, dedupeKey: row.dedupe_key
     }));
     const setLines = setLinesResult.data ?? [];
@@ -171,6 +172,11 @@ export class SupabaseRepository implements WorkbenchRepository {
 
   async confirmStatementImport(companyId: string, importId: string): Promise<{ status: 'complete'; imported: number; duplicates: number }> {
     return invokeBackend('statement-import-confirm', { companyId, importId });
+  }
+
+  async deleteStatementImport(companyId: string, importId: string): Promise<StatementImportDeletionResult> {
+    const response = await invokeBackend<{ filename: string; deletedLines: number; reopenedLines: number }>('statement-import-delete', { companyId, importId });
+    return { filename: response.filename, deletedLines: Number(response.deletedLines ?? 0), reopenedLines: Number(response.reopenedLines ?? 0) };
   }
 
   async enqueueAnalysis(companyId: string, bankAccountId?: string): Promise<{ batchId: string; queued: number }> {

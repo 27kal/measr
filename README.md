@@ -64,6 +64,7 @@ Never put Xero or Companies House credentials in a `VITE_` variable.
 - local-GUID-first Xero correlation records;
 - vault-backed Xero OAuth with rotating refresh tokens;
 - owner-only company deletion with exact-name confirmation, per-tenant Xero disconnection and Vault-secret cleanup;
+- owner/bookkeeper deletion of an imported statement that removes the canonical lines of its ingestion run and every derived record, refuses while any line still holds a live Xero entity, and reopens the far side of a shared transfer;
 - live Xero bank-account, contact and chart-of-accounts discovery for candidate preparation;
 - secure server functions for candidate creation and authoritative observation;
 - durable Xero-write reservation, native short-window idempotency and marker-based orphan recovery;

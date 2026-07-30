@@ -57,6 +57,9 @@ verify_jwt = true
 [functions.statement-import-confirm]
 verify_jwt = true
 
+[functions.statement-import-delete]
+verify_jwt = true
+
 [functions.statement-import-worker]
 verify_jwt = false
 

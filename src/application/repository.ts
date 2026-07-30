@@ -46,6 +46,12 @@ export interface XeroPreflightResponse {
   unmatchedLineIds: string[];
 }
 
+export interface StatementImportDeletionResult {
+  filename: string;
+  deletedLines: number;
+  reopenedLines: number;
+}
+
 export interface WorkbenchSnapshot {
   companies: Company[];
   workflow: WorkflowState;
@@ -65,6 +71,7 @@ export interface WorkbenchRepository {
   importLines(companyId: string, bankAccountId: string, csv: string): Promise<{ imported: number; errors: string[] }>;
   uploadStatement(companyId: string, bankAccountId: string, file: File): Promise<StatementImport>;
   confirmStatementImport(companyId: string, importId: string): Promise<{ status: 'complete'; imported: number; duplicates: number }>;
+  deleteStatementImport(companyId: string, importId: string): Promise<StatementImportDeletionResult>;
   enqueueAnalysis(companyId: string, bankAccountId?: string): Promise<{ batchId: string; queued: number }>;
   enqueueXeroObservation(companyId: string): Promise<{ jobId: string; scheduled: boolean }>;
   getXeroCandidateOptions(companyId: string): Promise<XeroCandidateOptions>;

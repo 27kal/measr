@@ -1,5 +1,6 @@
-import type { AcceptAgentMatchRequest, AnalyseDocumentRequest, ContinueAgentRequest, WorkbenchRepository, WorkbenchSnapshot, PrepareRequest, UploadDocumentRequest, XeroPreflightResponse } from '../application/repository';
+import type { AcceptAgentMatchRequest, AnalyseDocumentRequest, ContinueAgentRequest, StatementImportDeletionResult, WorkbenchRepository, WorkbenchSnapshot, PrepareRequest, UploadDocumentRequest, XeroPreflightResponse } from '../application/repository';
 import { importStatementCsv } from '../domain/csv';
+import { planStatementImportDeletion } from '../domain/statementImportDeletion';
 import { applyXeroObservation, prepareCandidate } from '../domain/workflow';
 import type { AgentRecommendation, AgentThread, Company, CompanyChat, CompanyChatThread, CompaniesHouseResult, LineDocument, StatementImport, XeroAttachmentInfo, XeroCandidateOptions, XeroObservation } from '../domain/types';
 import { demoCompanies, demoWorkflow } from '../data/seed';
@@ -90,18 +91,48 @@ export class DemoRepository implements WorkbenchRepository {
 
   async uploadStatement(companyId: string, bankAccountId: string, file: File): Promise<StatementImport> {
     if (!['text/csv', 'application/csv'].includes(file.type) && !file.name.toLowerCase().endsWith('.csv')) throw new Error('The local demo can extract CSV statements; connected Workbench also accepts PDF and spreadsheets.');
+    const ingestionRunId = `run-${crypto.randomUUID()}`;
+    const before = new Set(this.snapshot.workflow.lines.map(line => line.id));
     const result = await this.importLines(companyId, bankAccountId, await file.text());
     if (result.errors.length) throw new Error(result.errors.join(' '));
+    // Tie the new canonical lines to this import so deleting it can find them.
+    for (const line of this.snapshot.workflow.lines) if (!before.has(line.id)) line.ingestionRunId = ingestionRunId;
     const statementImport: StatementImport = {
       id: `import-${crypto.randomUUID()}`, companyId, bankAccountId, filename: file.name, mimeType: file.type || 'text/csv', byteSize: file.size,
       status: 'complete', institution: 'Demo bank', accountName: '', accountIdentifier: '', periodStart: null, periodEnd: null,
       transactionCount: result.imported, importedCount: result.imported, duplicateCount: 0,
       validation: { valid: true, proofLevel: 'structural', errors: [], warnings: [], checks: [], transactionCount: result.imported, netMovementMinor: 0 },
-      error: null, createdAt: new Date().toISOString(), completedAt: new Date().toISOString()
+      error: null, ingestionRunId, createdAt: new Date().toISOString(), completedAt: new Date().toISOString()
     };
     this.snapshot.statementImports.unshift(statementImport);
     this.save();
     return structuredClone(statementImport);
+  }
+
+  async deleteStatementImport(companyId: string, importId: string): Promise<StatementImportDeletionResult> {
+    const statementImport = this.snapshot.statementImports.find(item => item.id === importId);
+    if (!statementImport) throw new Error('Statement import not found');
+    if (statementImport.companyId !== companyId) throw new Error('Statement does not belong to this company');
+    const company = this.snapshot.companies.find(item => item.id === companyId);
+    if (company && company.memberRole === 'viewer') throw new Error('Only an owner or bookkeeper can delete a statement');
+
+    const plan = planStatementImportDeletion(statementImport, this.snapshot.workflow.lines, this.snapshot.workflow.candidateSets);
+    if (!plan.deletable) throw new Error(plan.blockers.join(' '));
+
+    const removed = new Set(plan.lineIds);
+    const touched = new Set(plan.candidateSetIds);
+    const reopened = new Set(plan.reopenedLineIds);
+    this.snapshot.workflow.lines = this.snapshot.workflow.lines
+      .filter(line => !removed.has(line.id))
+      .map(line => reopened.has(line.id)
+        ? { ...line, status: 'new' as const, activeCandidateSetId: null, statusVersion: line.statusVersion + 1, note: 'The paired statement was deleted. This line is waiting for analysis again.' }
+        : line.activeCandidateSetId && touched.has(line.activeCandidateSetId) ? { ...line, activeCandidateSetId: null } : line);
+    this.snapshot.workflow.candidateSets = this.snapshot.workflow.candidateSets.filter(set => !touched.has(set.id));
+    this.snapshot.documents = this.snapshot.documents.filter(document => !removed.has(document.statementLineId));
+    this.snapshot.statementImports = this.snapshot.statementImports.filter(item => item.id !== importId);
+    for (const lineId of removed) this.agentThreads.delete(`${companyId}:${lineId}`);
+    this.save();
+    return { filename: statementImport.filename, deletedLines: plan.lineIds.length, reopenedLines: plan.reopenedLineIds.length };
   }
 
   async confirmStatementImport(_companyId: string, importId: string): Promise<{ status: 'complete'; imported: number; duplicates: number }> {

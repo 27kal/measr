@@ -70,6 +70,7 @@ export interface StatementImport {
   duplicateCount: number;
   validation: StatementImportValidation | null;
   error: string | null;
+  ingestionRunId: string | null;
   createdAt: string;
   completedAt: string | null;
 }
@@ -91,6 +92,8 @@ export interface StatementLine {
   id: string;
   companyId: string;
   bankAccountId: string;
+  /** The ingestion run that created this line; absent for legacy demo fixtures. */
+  ingestionRunId?: string | null;
   postedAt: string;
   amountMinor: number;
   currency: 'GBP';

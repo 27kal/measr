@@ -16,16 +16,18 @@ import {
   PlusIcon,
   RectangleGroupIcon,
   ShieldCheckIcon,
+  TrashIcon,
   XCircleIcon,
   XMarkIcon
 } from '@heroicons/react/24/outline';
-import type { WorkbenchSnapshot } from './application/repository';
+import type { StatementImportDeletionResult, WorkbenchSnapshot } from './application/repository';
 import { candidateSetsForObservation } from './application/observation';
 import { DemoRepository } from './infrastructure/demoRepository';
 import { runtimeMode, supabase } from './infrastructure/supabase';
 import { SupabaseRepository } from './infrastructure/supabaseRepository';
 import { isOperational, readinessChecks } from './domain/readiness';
-import type { AgentRecommendation, AgentThread, AgentTimelineRun, BankAccount, CompaniesHouseResult, Company, LineDocument, StatementImport, StatementLine, StatementLineStatus, XeroAttachmentInfo, XeroCandidateOptions, XeroObservationProgress } from './domain/types';
+import { planStatementImportDeletion } from './domain/statementImportDeletion';
+import type { AgentRecommendation, AgentThread, AgentTimelineRun, BankAccount, CompaniesHouseResult, Company, LineDocument, StatementImport, StatementLine, StatementLineStatus, WorkflowState, XeroAttachmentInfo, XeroCandidateOptions, XeroObservationProgress } from './domain/types';
 import { hasXeroAttachmentScope, isXeroAttachmentPermissionError, xeroAttachmentErrorMessage } from './application/xeroAttachments';
 import { CompanyChatLauncher, CompanyChats } from './components/CompanyChats';
 
@@ -248,7 +250,7 @@ function CompanyView({ company, tab, snapshot, selectedLine, selectedChatId, pen
   return <div className={`page company-page ${tab !== 'chats' ? 'company-page-with-chat-launcher' : ''}`}>
     <header className="company-header"><div className="company-title"><span className="company-avatar large">{company.legalName.slice(0, 1)}</span><div><p className="eyebrow">{company.companiesHouseNumber}</p><h1>{company.legalName}</h1></div></div></header>
     <nav className="tab-nav"><button className={tab === 'feed' ? 'active' : ''} disabled={!ready} onClick={() => onTab('feed')}>Reconcile{companyLines.filter(line => line.status === 'needs_you' || line.status === 'waiting_doc').length > 0 && <span>{companyLines.filter(line => line.status === 'needs_you' || line.status === 'waiting_doc').length}</span>}</button><button className={tab === 'chats' ? 'active' : ''} onClick={() => onTab('chats', selectedChatId ?? companyChats[0]?.id)}>Chats</button><button className={tab === 'settings' ? 'active' : ''} onClick={() => onTab('settings')}>Settings</button></nav>
-    {tab === 'feed' && ready ? <Feed company={company} lines={companyLines} workflow={snapshot.workflow} analysisBatches={analysisBatches} statementImports={statementImports} xeroObservation={xeroObservation} onSelect={onSelectLine} notify={notify} onChanged={onChanged} /> : tab === 'chats' ? <CompanyChats company={company} chats={companyChats} selectedChatId={selectedChatId} repository={repository} initialMessage={pendingChat && pendingChat.chatId === selectedChatId ? pendingChat.message : undefined} onSelectChat={chatId => onTab('chats', chatId)} onNewChat={() => onTab('chats')} onStartChat={onStartChat} onInitialConsumed={onChatConsumed} onChanged={onChanged} notify={notify} /> : <Settings company={company} statementImports={statementImports} xeroObservation={xeroObservation} onChanged={onChanged} onDeleted={onDeleted} notify={notify} />}
+    {tab === 'feed' && ready ? <Feed company={company} lines={companyLines} workflow={snapshot.workflow} analysisBatches={analysisBatches} statementImports={statementImports} xeroObservation={xeroObservation} onSelect={onSelectLine} notify={notify} onChanged={onChanged} /> : tab === 'chats' ? <CompanyChats company={company} chats={companyChats} selectedChatId={selectedChatId} repository={repository} initialMessage={pendingChat && pendingChat.chatId === selectedChatId ? pendingChat.message : undefined} onSelectChat={chatId => onTab('chats', chatId)} onNewChat={() => onTab('chats')} onStartChat={onStartChat} onInitialConsumed={onChatConsumed} onChanged={onChanged} notify={notify} /> : <Settings company={company} statementImports={statementImports} workflow={snapshot.workflow} xeroObservation={xeroObservation} onChanged={onChanged} onDeleted={onDeleted} notify={notify} />}
     {tab !== 'chats' && !selectedLine && <CompanyChatLauncher onStart={onStartChat} />}
     {selectedLine && <LinePanel line={selectedLine} company={company} workflow={snapshot.workflow} documents={snapshot.documents.filter(document => document.statementLineId === selectedLine.id)} onClose={onCloseLine} onChanged={onChanged} notify={notify} />}
   </div>;
@@ -365,12 +367,14 @@ function Feed({ company, lines, workflow, analysisBatches, statementImports, xer
   </div>;
 }
 
-function StatementUploader({ company, account, statementImports, onChanged }: { company: Company; account: BankAccount; statementImports: StatementImport[]; onChanged: () => Promise<void> }) {
+function StatementUploader({ company, account, statementImports, workflow, onChanged, notify }: { company: Company; account: BankAccount; statementImports: StatementImport[]; workflow: WorkflowState; onChanged: () => Promise<void>; notify: Notify }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
+  const [deleting, setDeleting] = useState<StatementImport | null>(null);
+  const canDelete = company.memberRole !== 'viewer';
   const recent = [...statementImports].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 4);
   const upload = async (files: File[]) => {
     if (!files.length || uploading) return;
@@ -416,7 +420,7 @@ function StatementUploader({ company, account, statementImports, onChanged }: { 
     </div>
     {error && <div className="statement-import-error" role="alert"><NoticeIcon tone="error"/><span>{error}</span></div>}
     {recent.length > 0 && <div className="statement-import-list">{recent.map(statementImport => <article className={`statement-import statement-import-${statementImport.status}`} key={statementImport.id}>
-      <div className="statement-import-main"><span className="statement-file-icon"><DocumentIcon className="ui-icon"/></span><div><strong>{statementImport.filename}</strong><small>{statusCopy(statementImport)}</small></div>{['queued', 'processing', 'retryable'].includes(statementImport.status) && <span className="analysis-spinner"/>}</div>
+      <div className="statement-import-main"><span className="statement-file-icon"><DocumentIcon className="ui-icon"/></span><div><strong>{statementImport.filename}</strong><small>{statusCopy(statementImport)}</small></div>{['queued', 'processing', 'retryable'].includes(statementImport.status) && <span className="analysis-spinner"/>}{canDelete && <button className="icon-button statement-delete" aria-label={`Delete ${statementImport.filename}`} title="Delete this statement and its lines" onClick={() => setDeleting(statementImport)}><TrashIcon className="ui-icon"/></button>}</div>
       {statementImport.status === 'awaiting_confirmation' && <div className="statement-confirmation">
         <div className="statement-confirmation-head"><div><span>Workbench read this as</span><strong>{[statementImport.institution, statementImport.accountName, statementImport.accountIdentifier].filter(Boolean).join(' · ') || 'Bank statement'}</strong></div><span className="statement-proof">{statementImport.validation?.proofLevel === 'balanced' ? 'Balances verified' : statementImport.validation?.proofLevel === 'cross_checked' ? 'Two readings agreed' : 'Structure verified'}</span></div>
         <table><tbody><tr><th>Period</th><td>{statementImport.periodStart && statementImport.periodEnd ? `${formatDate(statementImport.periodStart)}–${formatDate(statementImport.periodEnd)}` : 'Not printed'}</td></tr><tr><th>Transactions</th><td>{statementImport.transactionCount}</td></tr><tr><th>Destination</th><td>{account.name}</td></tr></tbody></table>
@@ -425,10 +429,47 @@ function StatementUploader({ company, account, statementImports, onChanged }: { 
       </div>}
       {statementImport.status === 'failed' && <div className="statement-failure"><strong>Workbench did not import any lines.</strong><p>{statementImport.error || statementImport.validation?.errors.join(' ') || 'The complete statement could not be proved.'}</p></div>}
     </article>)}</div>}
+    {deleting && <DeleteStatementDialog company={company} statementImport={deleting} workflow={workflow} onClose={() => setDeleting(null)} onDeleted={async result => {
+      setDeleting(null);
+      await onChanged();
+      notify(`${result.filename} deleted · ${result.deletedLines} line${result.deletedLines === 1 ? '' : 's'} removed${result.reopenedLines ? ` · ${result.reopenedLines} paired line${result.reopenedLines === 1 ? '' : 's'} reopened` : ''}`);
+    }}/>}
   </div>;
 }
 
-function Settings({ company, statementImports, xeroObservation, onChanged, onDeleted, notify }: { company: Company; statementImports: StatementImport[]; xeroObservation?: XeroObservationProgress; onChanged: () => Promise<void>; onDeleted: () => Promise<void>; notify: Notify }) {
+function DeleteStatementDialog({ company, statementImport, workflow, onClose, onDeleted }: { company: Company; statementImport: StatementImport; workflow: WorkflowState; onClose: () => void; onDeleted: (result: StatementImportDeletionResult) => Promise<void> }) {
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState('');
+  const plan = planStatementImportDeletion(statementImport, workflow.lines, workflow.candidateSets);
+  const remove = async () => {
+    setDeleting(true);
+    setError('');
+    try {
+      const result = await repository.deleteStatementImport(company.id, statementImport.id);
+      await onDeleted(result);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Could not delete the statement');
+      setDeleting(false);
+    }
+  };
+  return <div className="modal-layer"><button className="modal-scrim" aria-label="Cancel statement deletion" onClick={onClose}/><section className="modal destructive-modal" role="dialog" aria-modal="true" aria-labelledby="delete-statement-title">
+    <header><div><p className="eyebrow">Permanent action</p><h2 id="delete-statement-title">Delete this statement?</h2></div><button className="icon-button" aria-label="Close" onClick={onClose}><XMarkIcon className="ui-icon"/></button></header>
+    <div className="destructive-body">
+      <p><strong>{statementImport.filename}</strong> and everything Workbench derived from it will be removed: {plan.lineIds.length} bank line{plan.lineIds.length === 1 ? '' : 's'}, their agent analysis, uploaded documents and audit events. The uploaded file is deleted from private storage.</p>
+      {plan.lineIds.length === 0 && plan.blockers.length === 0 && <p>This statement produced no canonical lines, so only the upload record is removed.</p>}
+      {plan.reopenedLineIds.length > 0 && <p>{plan.reopenedLineIds.length} paired transfer line{plan.reopenedLineIds.length === 1 ? '' : 's'} on another statement will return to <strong>New</strong>.</p>}
+      {plan.blockers.length > 0 && <p className="destructive-warning">{plan.blockers.join(' ')}</p>}
+      <p>Lines that deduplicated against an earlier statement are not affected. Nothing is deleted from Xero.</p>
+      {error && <p className="auth-error" role="alert">{error}</p>}
+      <div className="modal-actions">
+        <button className="button secondary" disabled={deleting} onClick={onClose}>Cancel</button>
+        <button className="button danger" disabled={deleting || !plan.deletable} onClick={() => void remove()}>{deleting ? 'Deleting…' : 'Permanently delete statement'}</button>
+      </div>
+    </div>
+  </section></div>;
+}
+
+function Settings({ company, statementImports, workflow, xeroObservation, onChanged, onDeleted, notify }: { company: Company; statementImports: StatementImport[]; workflow: WorkflowState; xeroObservation?: XeroObservationProgress; onChanged: () => Promise<void>; onDeleted: () => Promise<void>; notify: Notify }) {
   const [draft, setDraft] = useState(company);
   const [xeroConnectUrl, setXeroConnectUrl] = useState<string | null>(null);
   const [startingXero, setStartingXero] = useState(false);
@@ -477,7 +518,7 @@ function Settings({ company, statementImports, xeroObservation, onChanged, onDel
     {!operational && <section className="setup-hero"><div><p className="eyebrow">Company readiness</p><h2>Finish setup to start reconciling</h2><p>The company is ready. Connect Xero and confirm the required accounting details to begin.</p></div><div className="setup-score"><strong>{checks.filter(check => check.complete).length}/{checks.length}</strong><span>complete</span></div></section>}
     <div className={`settings-layout ${operational ? 'settings-layout-single' : ''}`}><div className="settings-main">
       <section className="settings-card"><div className="settings-card-title"><span className="step-icon xero">X</span><div><h3>Xero organisation</h3><p>Workbench creates candidates; reconciliation always happens in Xero.</p></div></div>{draft.setup.xeroConnected ? <><div className="connected-row"><div><span className="connected-dot"/><strong>{draft.xeroTenantName ?? 'Connected Xero organisation'}</strong><small>{missingAttachmentScope ? 'Connected · attachment permission required' : 'Connected · organisation settings synced'}</small>{runtimeMode === 'supabase' && <small className={xeroObservation?.status === 'error' ? 'xero-observation-error' : ''}>{xeroObservationStatus(xeroObservation)}</small>}</div>{runtimeMode === 'demo' && <button className="text-button" onClick={() => void save({ ...draft, setup: { ...draft.setup, xeroConnected: false } })}>Disconnect</button>}</div>{missingAttachmentScope && <div className="xero-permission-warning"><div><NoticeIcon tone="warning"/><p><strong>Allow evidence attachments</strong><span>Reauthorise once. Workbench will then attach any pending documents automatically.</span></p></div>{xeroConnectUrl ? <a className="button secondary" href={xeroConnectUrl}>Reconnect Xero</a> : <button className="button secondary" disabled>{startingXero ? 'Preparing Xero…' : 'Reconnect unavailable'}</button>}</div>}</> : runtimeMode === 'demo' ? <button className="button primary full" onClick={() => void save({ ...draft, setup: { ...draft.setup, xeroConnected: true } })}>Connect Xero</button> : xeroConnectUrl ? <a className="button primary full" href={xeroConnectUrl}>Connect Xero</a> : <button className="button primary full" disabled>{startingXero ? 'Preparing Xero…' : 'Xero connection unavailable'}</button>}</section>
-      <section className="settings-card"><div className="settings-card-title"><span className="step-icon"><BuildingLibraryIcon className="ui-icon"/></span><div><h3>Bank data</h3><p>Upload the bank's statement as CSV, spreadsheet or PDF. Workbench reads and verifies it without a mapping step.</p></div></div>{draft.bankAccounts.map(account => <div className="bank-source" key={account.id}><div className="bank-row"><div><strong>{account.name}</strong><small>{account.source === 'csv' ? 'Statement uploads' : 'Connected feed'} · GBP</small>{runtimeMode === 'supabase' && xeroOptions && <label className="bank-mapping">Matching Xero bank account<select value={account.xeroAccountId ?? ''} onChange={event => { const next = { ...draft, bankAccounts: draft.bankAccounts.map(item => item.id === account.id ? { ...item, xeroAccountId: event.target.value || null } : item) }; void save(next); }}><option value="">Choose…</option>{xeroOptions.bankAccounts.map(option => <option value={option.id} key={option.id}>{option.name}{option.code ? ` · ${option.code}` : ''}</option>)}</select></label>}</div></div><StatementUploader company={company} account={account} statementImports={statementImports.filter(statementImport => statementImport.bankAccountId === account.id)} onChanged={onChanged}/></div>)}<button className="button secondary full" onClick={() => void addBank()}><PlusIcon className="ui-icon"/>Add bank account</button></section>
+      <section className="settings-card"><div className="settings-card-title"><span className="step-icon"><BuildingLibraryIcon className="ui-icon"/></span><div><h3>Bank data</h3><p>Upload the bank's statement as CSV, spreadsheet or PDF. Workbench reads and verifies it without a mapping step.</p></div></div>{draft.bankAccounts.map(account => <div className="bank-source" key={account.id}><div className="bank-row"><div><strong>{account.name}</strong><small>{account.source === 'csv' ? 'Statement uploads' : 'Connected feed'} · GBP</small>{runtimeMode === 'supabase' && xeroOptions && <label className="bank-mapping">Matching Xero bank account<select value={account.xeroAccountId ?? ''} onChange={event => { const next = { ...draft, bankAccounts: draft.bankAccounts.map(item => item.id === account.id ? { ...item, xeroAccountId: event.target.value || null } : item) }; void save(next); }}><option value="">Choose…</option>{xeroOptions.bankAccounts.map(option => <option value={option.id} key={option.id}>{option.name}{option.code ? ` · ${option.code}` : ''}</option>)}</select></label>}</div></div><StatementUploader company={company} account={account} statementImports={statementImports.filter(statementImport => statementImport.bankAccountId === account.id)} workflow={workflow} onChanged={onChanged} notify={notify}/></div>)}<button className="button secondary full" onClick={() => void addBank()}><PlusIcon className="ui-icon"/>Add bank account</button></section>
       <section className="settings-card"><div className="settings-card-title"><span className="step-icon"><BanknotesIcon className="ui-icon"/></span><div><h3>Accounting settings</h3><p>Only values that cannot be read reliably from Xero are requested here.</p></div></div><div className="form-grid"><label>Base currency<select value={draft.setup.baseCurrency ?? ''} onChange={event => setDraft({ ...draft, setup: { ...draft.setup, baseCurrency: event.target.value === 'GBP' ? 'GBP' : null } })}><option value="">Choose…</option><option value="GBP">GBP — Pound sterling</option></select></label><label>VAT registered?<select value={draft.setup.vatRegistered === null ? '' : String(draft.setup.vatRegistered)} onChange={event => setDraft({ ...draft, setup: { ...draft.setup, vatRegistered: event.target.value === '' ? null : event.target.value === 'true', vatScheme: event.target.value === 'false' ? 'not_applicable' : draft.setup.vatScheme } })}><option value="">Choose…</option><option value="true">Yes</option><option value="false">No</option></select></label>{draft.setup.vatRegistered && <label>VAT scheme<select value={draft.setup.vatScheme ?? ''} onChange={event => setDraft({ ...draft, setup: { ...draft.setup, vatScheme: event.target.value as Company['setup']['vatScheme'] } })}><option value="">Choose…</option><option value="standard">Standard</option><option value="cash">Cash accounting</option><option value="flat_rate">Flat rate</option></select></label>}</div><button className="button primary" onClick={() => void save()}>Save accounting settings</button></section>
       <section className="settings-card agent-card"><div className="settings-card-title"><span className="step-icon agent">AI</span><div><h3>Company memory</h3><p>The agent uses this company's Xero history and approved corrections when reviewing bank lines. Every recommendation still requires your approval.</p></div></div>{bootstrapThread ? <div className="agent-status"><strong>Ready</strong><small>Last updated {new Date(bootstrapThread.createdAt).toLocaleString('en-GB')}</small></div> : <p className="agent-empty">Company history has not been reviewed yet.</p>}<div className="agent-actions"><button className="button secondary" disabled={agentBusy || !company.setup.xeroConnected} onClick={() => void bootstrap()}>{agentBusy ? 'Updating…' : bootstrapThread ? 'Refresh company memory' : 'Review Xero history'}</button></div>{agentProgress && <p className="agent-progress">{agentProgress}</p>}</section>
       {draft.memberRole === 'owner' && <section className="settings-card danger-zone"><div><h3>Delete company</h3><p>Permanently remove this company and its Workbench data. Any accounting records already created in Xero will remain in Xero.</p></div><button className="button danger" onClick={() => setConfirmingDelete(true)}>Delete company</button></section>}

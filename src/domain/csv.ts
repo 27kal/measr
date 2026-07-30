@@ -110,6 +110,7 @@ export function importStatementCsv(
       id: `line-${dedupeKey}`,
       companyId: context.companyId,
       bankAccountId: context.bankAccountId,
+      ingestionRunId: null,
       postedAt,
       amountMinor,
       currency: 'GBP',
