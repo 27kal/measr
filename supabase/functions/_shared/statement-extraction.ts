@@ -6,6 +6,15 @@ import type { StatementExtraction } from './statement-import-validation.ts';
 
 const MODEL = Deno.env.get('OPENAI_STATEMENT_MODEL') ?? Deno.env.get('OPENAI_AGENT_MODEL') ?? 'gpt-5.6';
 
+// Deterministic properties of the uploaded file itself. Retrying cannot
+// change them, so the worker fails the import on the first attempt.
+export class PermanentExtractionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PermanentExtractionError';
+  }
+}
+
 const transactionSchema = z.object({
   postedAt: z.string(),
   amountMinor: z.number().int(),
@@ -60,6 +69,16 @@ function decodeText(bytes: Uint8Array): string {
 
 const MAX_TABULAR_CHARACTERS = 2_000_000;
 
+// One extraction pass must emit every transaction as structured output inside
+// the worker's time and token budget (140 s, 30k tokens). Statements beyond
+// roughly this many rows reliably outlive the worker, so refuse them upfront
+// with an actionable message instead of retrying towards a silent timeout.
+const MAX_TABULAR_ROWS = 400;
+
+function countDataRows(text: string): number {
+  return text.split('\n').filter(line => line.trim().length > 0).length;
+}
+
 function completeTabularText(bytes: Uint8Array, mimeType: string): string | null {
   let text: string;
   if (['text/csv', 'application/csv', 'text/tab-separated-values'].includes(mimeType)) {
@@ -73,8 +92,10 @@ function completeTabularText(bytes: Uint8Array, mimeType: string): string | null
   } else {
     return null;
   }
-  if (!text.trim()) throw new Error('The uploaded statement contains no readable rows');
-  if (text.length > MAX_TABULAR_CHARACTERS) throw new Error('This statement is too large to verify safely in one pass. Upload a shorter statement period.');
+  if (!text.trim()) throw new PermanentExtractionError('The uploaded statement contains no readable rows');
+  if (text.length > MAX_TABULAR_CHARACTERS) throw new PermanentExtractionError('This statement is too large to verify safely in one pass. Upload a shorter statement period.');
+  const rows = countDataRows(text);
+  if (rows > MAX_TABULAR_ROWS) throw new PermanentExtractionError(`This statement has about ${rows} rows, more than the ${MAX_TABULAR_ROWS} Workbench can verify in one pass. Split it into shorter periods and upload each part; lines already imported are deduplicated automatically.`);
   return text;
 }
 

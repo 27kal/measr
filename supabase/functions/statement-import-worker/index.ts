@@ -1,7 +1,7 @@
 import { json } from '../_shared/http.ts';
 import { serviceClient } from '../_shared/company-access.ts';
 import { DOCUMENT_BUCKET } from '../_shared/documents.ts';
-import { extractStatement } from '../_shared/statement-extraction.ts';
+import { extractStatement, PermanentExtractionError } from '../_shared/statement-extraction.ts';
 import { addStatementDedupeKeys, sameTransactionSet, statementIdentityMatches, validateStatementExtraction, type StatementExtraction, type StatementValidation } from '../_shared/statement-import-validation.ts';
 
 type Claim = { importId: string; companyId: string; bankAccountId: string; attempt: number; leaseToken: string };
@@ -102,10 +102,12 @@ async function processClaim(service: any, claim: Claim) {
     return { importId: claim.importId, outcome: 'awaiting_confirmation', proofLevel: validation.proofLevel };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Statement extraction failed';
+    // A deterministic property of the file cannot succeed on retry.
+    const outcome = error instanceof PermanentExtractionError || claim.attempt >= 3 ? 'failed' : 'retryable';
     console.error('statement import failed', { importId: claim.importId, attempt: claim.attempt, message, stack: error instanceof Error ? error.stack : undefined });
-    try { await finish(service, claim, claim.attempt >= 3 ? 'failed' : 'retryable', undefined, undefined, message); }
+    try { await finish(service, claim, outcome, undefined, undefined, message); }
     catch (finishError) { console.error('statement import finish failed', finishError); }
-    return { importId: claim.importId, outcome: claim.attempt >= 3 ? 'failed' : 'retryable', error: message };
+    return { importId: claim.importId, outcome, error: message };
   }
 }
 
