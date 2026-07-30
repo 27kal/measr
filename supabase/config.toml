@@ -1,0 +1,67 @@
+project_id = "workbench"
+
+[functions.xero-oauth-callback]
+verify_jwt = false
+
+[functions.company-delete]
+verify_jwt = true
+
+[functions.agent-bootstrap]
+verify_jwt = true
+
+[functions.agent-shadow]
+verify_jwt = true
+
+[functions.agent-thread]
+verify_jwt = true
+
+[functions.agent-accept-match]
+verify_jwt = true
+
+[functions.agent-continue]
+verify_jwt = true
+
+[functions.agent-accept-create]
+verify_jwt = true
+
+[functions.xero-reconcile-preflight]
+verify_jwt = true
+
+[functions.agent-upload-document]
+verify_jwt = true
+
+[functions.agent-analyse-document]
+verify_jwt = true
+
+[functions.xero-sync-document]
+verify_jwt = true
+
+[functions.agent-propagate-handbook]
+verify_jwt = true
+
+[functions.agent-analysis-control]
+verify_jwt = true
+
+[functions.agent-analysis-worker]
+verify_jwt = false
+
+[functions.xero-observation-control]
+verify_jwt = true
+
+[functions.xero-observation-worker]
+verify_jwt = false
+
+[functions.statement-upload]
+verify_jwt = true
+
+[functions.statement-import-confirm]
+verify_jwt = true
+
+[functions.statement-import-worker]
+verify_jwt = false
+
+[functions.company-chat]
+verify_jwt = true
+
+[functions.company-chat-thread]
+verify_jwt = true
