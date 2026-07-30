@@ -55,7 +55,10 @@ function extractionAgent() {
   return new Agent({
     name: 'Workbench statement extraction',
     model: MODEL,
-    modelSettings: { reasoning: { effort: 'medium' }, text: { verbosity: 'low' }, parallelToolCalls: false, maxTokens: 30000 },
+    // Extraction is mechanical transcription; the deterministic validator is
+    // the correctness control. Low reasoning effort roughly halves generation
+    // time, which decides whether a statement fits the worker's wall clock.
+    modelSettings: { reasoning: { effort: 'low' }, text: { verbosity: 'low' }, parallelToolCalls: false, maxTokens: 30000 },
     outputType: extractionSchema,
     instructions,
     tools: []
@@ -70,10 +73,12 @@ function decodeText(bytes: Uint8Array): string {
 const MAX_TABULAR_CHARACTERS = 2_000_000;
 
 // One extraction pass must emit every transaction as structured output inside
-// the worker's time and token budget (140 s, 30k tokens). Statements beyond
-// roughly this many rows reliably outlive the worker, so refuse them upfront
-// with an actionable message instead of retrying towards a silent timeout.
-const MAX_TABULAR_ROWS = 400;
+// the worker's time and token budget (140 s, 30k tokens). Observed on live
+// statements: 92 rows extracts comfortably, ~160 rows reliably outlives the
+// worker even at low reasoning effort. Refuse anything above this limit
+// upfront with an actionable message instead of retrying towards a silent
+// timeout. Removing the limit entirely requires chunked extraction.
+const MAX_TABULAR_ROWS = 120;
 
 function countDataRows(text: string): number {
   return text.split('\n').filter(line => line.trim().length > 0).length;
