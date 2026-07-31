@@ -53,12 +53,13 @@ async function loadOrCreateSnapshot(service: any, claim: Claim, batch: Row): Pro
     if (existing) return existing;
   }
 
-  const { data: batchJobs, error: jobsError } = await service.from('agent_analysis_jobs').select('statement_line_id').eq('batch_id', claim.batchId);
+  // One embedded query through the job→line foreign key. Filtering lines with
+  // .in('id', lineIds) built a URL with every batch line UUID, which the
+  // gateway refuses for large batches (a 480-line batch is a ~19 KB GET).
+  const { data: batchJobs, error: jobsError } = await service.from('agent_analysis_jobs').select('statement_line_id, statement_lines(posted_at)').eq('batch_id', claim.batchId);
   if (jobsError) throw new Error(jobsError.message);
   const lineIds = (batchJobs ?? []).map((job: Row) => String(job.statement_line_id));
-  const { data: batchLines, error: linesError } = await service.from('statement_lines').select('id,posted_at').in('id', lineIds);
-  if (linesError) throw new Error(linesError.message);
-  const dates = (batchLines ?? []).map((line: Row) => String(line.posted_at)).sort();
+  const dates = (batchJobs ?? []).flatMap((job: Row) => job.statement_lines ? [String((job.statement_lines as Row).posted_at)] : []).sort();
   if (!dates.length) throw new Error('The analysis batch has no statement lines');
   const shiftDate = (value: string, days: number) => {
     const date = new Date(`${value}T12:00:00Z`);
