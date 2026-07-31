@@ -69,6 +69,10 @@ async function completeVerified(service: any, claim: Claim, profile: Row | null,
 // attempt budget) and immediately schedules the next run. The final run
 // stitches every persisted segment and validates the whole.
 const MAX_CHUNK_REPAIR_ROUNDS = 2;
+// Segment extractions are I/O-bound model calls, so a batch in flight costs
+// the same wall clock as one. Each segment persists the moment it completes;
+// a killed run loses only its unfinished calls.
+const CHUNK_CONCURRENCY = 3;
 
 async function processChunked(service: any, claim: Claim, row: Row, profile: Row | null, text: string) {
   const plan = planStatementChunks(text)!;
@@ -77,16 +81,24 @@ async function processChunked(service: any, claim: Claim, row: Row, profile: Row
   if (statesError) throw new Error(statesError.message);
   const states = new Map<number, Row>((chunkStates ?? []).map((chunkRow: Row) => [Number(chunkRow.chunk_index), chunkRow]));
   const settled = (index: number) => states.has(index) && !states.get(index)!.redo_errors;
-  const next = plan.chunks.find(chunk => !settled(chunk.index));
-  if (next) {
-    const redoErrors = states.get(next.index)?.redo_errors as string[] | null | undefined;
-    const segment = await extractStatementChunk(plan, next, String(row.filename), redoErrors?.length ? redoErrors.join('\n') : undefined);
-    const { error: upsertError } = await service.from('statement_import_chunks').upsert({
-      import_id: claim.importId, chunk_index: next.index, line_start: next.lineStart, line_end: next.lineEnd, extraction: segment, redo_errors: null
-    }, { onConflict: 'import_id,chunk_index' });
-    if (upsertError) throw new Error(upsertError.message);
-    const settledCount = plan.chunks.filter(chunk => chunk.index === next.index || settled(chunk.index)).length;
+  const pending = plan.chunks.filter(chunk => !settled(chunk.index));
+  if (pending.length > 0) {
+    const batch = pending.slice(0, CHUNK_CONCURRENCY);
+    const results = await Promise.allSettled(batch.map(async chunk => {
+      const redoErrors = states.get(chunk.index)?.redo_errors as string[] | null | undefined;
+      const segment = await extractStatementChunk(plan, chunk, String(row.filename), redoErrors?.length ? redoErrors.join('\n') : undefined);
+      const { error: upsertError } = await service.from('statement_import_chunks').upsert({
+        import_id: claim.importId, chunk_index: chunk.index, line_start: chunk.lineStart, line_end: chunk.lineEnd, extraction: segment, redo_errors: null
+      }, { onConflict: 'import_id,chunk_index' });
+      if (upsertError) throw new Error(upsertError.message);
+    }));
+    const succeeded = results.filter(result => result.status === 'fulfilled').length;
+    const firstFailure = results.find(result => result.status === 'rejected') as PromiseRejectedResult | undefined;
+    if (firstFailure && succeeded === 0) throw firstFailure.reason;
+    const settledCount = plan.chunks.filter(chunk => settled(chunk.index)).length + succeeded;
     if (settledCount < total) {
+      // Partial batch failures still count as progress; the failed segments
+      // are simply extracted again by the next run.
       await finish(service, claim, 'progress', undefined, undefined, undefined, { chunkDone: settledCount, chunkTotal: total });
       scheduleWorker('statement-import-worker');
       return { importId: claim.importId, outcome: 'progress', chunkDone: settledCount, chunkTotal: total };
